@@ -28,6 +28,9 @@ class SimpleLoadBalancer(object):
 	def _handle_ConnectionUp(self, event):
 		self.connection = event.connection
 		log.debug("FUNCTION: _handle_ConnectionUp")
+
+		for server in self.SERVER_IPS:
+			self.send_arp_request(self.connection, server)
 		""" START: Edit this section
 
 		# TODO_M: Send ARP Requests to learn the MAC address of all Backend Servers.
@@ -64,22 +67,25 @@ class SimpleLoadBalancer(object):
 	def send_arp_reply(self, packet, connection, outport):
 		log.debug("FUNCTION: send_arp_reply")
 
-		""" START: Edit this section
-		arp_rep= # TODO: Create an ARP reply
+		# send arp reply
+
+		print(packet)
+		
+		arp_rep= arp() # TODO: Create an ARP reply
 		arp_rep.hwtype = arp_rep.HW_TYPE_ETHERNET
 		arp_rep.prototype = arp_rep.PROTO_TYPE_IP
 		arp_rep.hwlen = 6
 		arp_rep.protolen = arp_rep.protolen
-		arp_rep.opcode = # TODO: Set the ARP TYPE to REPLY
+		arp_rep.opcode = arp_rep.REPLY # TODO: Set the ARP TYPE to REPLY
 
-		arp_rep.hwdst = # TODO: Set MAC destination
-		arp_rep.hwsrc = # TODO: Set MAC source
+		arp_rep.hwdst = packet.hwsrc # TODO: Set MAC destination
+		arp_rep.hwsrc = packet.arp_rep.hwdst # TODO: Set MAC source
 
 		#Reverse the src, dest to have an answer
-		arp_rep.protosrc = # TODO: Set IP source
-		arp_rep.protodst = # TODO: Set IP destination
+		arp_rep.protosrc = packet.protodst # TODO: Set IP source
+		arp_rep.protodst = packet.protosrc # TODO: Set IP destination
 
-		
+		"""
 		eth = # TODO: Create an ethernet frame and set the arp_rep as it's payload.
 		eth.type = # TODO: Set packet Typee
 		eth.dst = # TODO: Set destination of the Ethernet Frame
@@ -93,9 +99,39 @@ class SimpleLoadBalancer(object):
 
 		msg.in_port = outport
 		connection.send(msg)
-		END: Edit this section"""
+		"""
 
 	def send_arp_request(self, connection, ip):
+		# Difficulties? https://en.wikipedia.org/wiki/Address_Resolution_Protocol#Example
+
+		log.debug("FUNCTION: send_arp_request")
+
+		arp_req = arp()
+		arp_req.hwtype = arp_req.HW_TYPE_ETHERNET
+		arp_req.prototype = arp_req.PROTO_TYPE_IP
+		arp_req.hwlen = 6
+		arp_req.protolen = arp_req.protolen
+		arp_req.opcode = arp_req.REQUEST # ADD OPCODE
+		arp_req.protodst = ip # IP the load balancer is looking for
+		arp_req.hwsrc = LOADBALANCER_MAC # Set the MAC source of the ARP REQUEST
+		arp_req.hwdst = ETHERNET_BROADCAST_ADDRESS # Set the MAC address in such a way that the packet is marked as a Broadcast
+		arp_req.protosrc = self.LOADBALANCER_IP # Set the IP source of the ARP REQUEST
+
+		eth = ethernet() # Create an ethernet frame and set the arp_req as it's payload.
+		eth.type =  ethernet.ARP_TYPE # Set packet Typee
+		eth.dst = ETHERNET_BROADCAST_ADDRESS # Set the MAC address in such a way that the packet is marked as a Broadcast
+		eth.set_payload(arp_req)
+
+		msg = of.ofp_packet_out()# create the necessary Openflow Message to make the switch send the ARP Request
+		msg.data = eth.pack()
+		msg.actions.append(of.ofp_action_nw_addr(of.OFPAT_SET_NW_DST,ip))
+
+		msg.actions.append(of.ofp_action_output(port = of.OFPP_FLOOD)) # append an action to the message which makes the switch flood the packet out
+
+		connection.send(msg)
+
+
+	def bu_send_arp_request(self, connection, ip):
 		# Difficulties? https://en.wikipedia.org/wiki/Address_Resolution_Protocol#Example
 
 		log.debug("FUNCTION: send_arp_request")
@@ -177,34 +213,39 @@ class SimpleLoadBalancer(object):
 		inport = event.port
 		if packet.type == packet.LLDP_TYPE or packet.type == packet.IPV6_TYPE:
 			log.info("Received LLDP or IPv6 Packet...")
+ 		# start edit
 
-		""" START: Edit this section
-
-		elif # TODO: Handle ARP Packets
+		
+		elif packet.type == packet.ARP_TYPE: # Handle ARP Packets
 			log.debug("Received ARP Packet")
 			response = packet.payload
-			if # TODO: Handle ARP replies
+			if response.opcode == response.REPLY: # TODO: Handle ARP replies
 				log.debug("ARP REPLY Received")
 				if response.protosrc not in self.SERVERS.keys():
-					# TODO: Add Servers MAC and port to SERVERS dict
+					self.SERVERS[IPAddr(response.protosrc)] = {'server_mac':EthAddr(response.hwsrc), 'port':inport}
 		
-			elif # TODO: Handle ARP requests
+			elif response.opcode == response.REQUEST: # TODO: Handle ARP requests
 				log.debug("ARP REQUEST Received")
 				if response.protosrc not in self.SERVERS.keys() and response.protosrc not in self.CLIENTS.keys():
+					log.info("inserting")
 					self.CLIENTS[response.protosrc]={'client_mac':EthAddr(packet.payload.hwsrc),'port':inport}		#insert client's ip  mac and port to a forwarding table
-									
+				print(response.protodst)
 				if (response.protosrc in self.CLIENTS.keys()and response.protodst == self.LOADBALANCER_IP):
 					log.info("Client %s sent ARP req to LB %s"%(response.protosrc,response.protodst))
 					# Load Balancer intercepts ARP Client -> Server
 					# TODO: Send ARP Reply to the client, include the event.connection object
+					self.send_arp_reply(packet, connection, inport)
+					
 				
 				elif response.protosrc in self.SERVERS.keys() and response.protodst in self.CLIENTS.keys():
 					log.info("Server %s sent ARP req to client"%response.protosrc)
 					# Load Balancer intercepts ARP from Client <- Server
 					# TODO: Send ARP Reply to the Server, include the event.connection object
+					self.send_arp_reply(packet, connection, inport)
+		
 				else:
 					log.info("Invalid ARP request")
-
+		"""
 		elif # TODO: Handle IP Packets
 			log.debug("Received IP Packet from %s" % packet.next.srcip)
 			# Handle Requests from Clients to Servers
@@ -278,8 +319,9 @@ class SimpleLoadBalancer(object):
 		else:
 			log.info("Unknown Packet type: %s" % packet.type)
 			return
-		END: Edit this section"""
-		return
+		# end
+		"""
+
 
 def launch(loadbalancer, servers):
 	# Color-coding and pretty-printing the log output
@@ -293,3 +335,4 @@ def launch(loadbalancer, servers):
 	log.info("Loadbalancer IP: %s" % loadbalancer_ip)
 	log.info("Backend Server IPs: %s\n\n---------------------------------------------------------------------------\n\n" % ', '.join(str(ip) for ip in server_ips))
 	core.registerNew(SimpleLoadBalancer, loadbalancer_ip, server_ips)
+	
